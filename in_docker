@@ -1,0 +1,6 @@
+#!/bin/bash
+if cat /proc/1/cgroup | grep -qvE '/$|init.scope$'; then
+        exit 0
+else
+	exit 1
+fi

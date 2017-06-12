@@ -1,0 +1,49 @@
+#!/bin/bash
+
+if [[ $1 == '-r' ]]; then
+	restart=1
+	shift
+fi
+if [[ -z $restart ]] && /home/mrr/bin/in_docker; then
+	echo We already appear to be inside docker >&2
+	exit 1
+fi
+XAUTHDIR=/tmp/docker.xauth
+XAUTH=$XAUTHDIR/authority
+
+IDS=$(id -un).$(id -u).$(id -gn).$(id -g).$(stat -c %g /var/run/docker.sock)
+IMAGE=debian-dev:$IDS
+SHELL_CMD="exec >/dev/tty 2>/dev/tty </dev/tty && /usr/bin/screen -s -/bin/bash"
+
+# If our authority doesn't exist, create it
+if [[ ! -e $XAUTH ]]; then
+	[[ ! -d $XAUTHDIR ]] && mkdir -p $XAUTHDIR
+	touch $XAUTH
+       	xauth nlist $DISPLAY | sed -e 's/^..../ffff/' | xauth -f $XAUTH nmerge -
+fi
+
+existing=$(docker ps -f label=ids=$IDS --format='{{.Names}}' | grep -v STALE)
+if [[ -n $existing && -z $restart ]]; then
+	docker exec "$@" -it $existing sh -c "$SHELL_CMD"
+else
+	if [[ -n $existing ]]; then
+		while ! docker rename $existing $(mktemp -u STALE.XXXXXXXX); do
+			echo Error renaming existing container... retrying. >&2
+			sleep 1
+		done
+	fi
+	docker run \
+		-v /tmp/.X11-unix:/tmp/.X11-unix -v $XAUTHDIR:$XAUTHDIR \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		-v $HOME:/home/$(id -un) \
+		-e XAUTHORITY=$XAUTH -e DISPLAY=$DISPLAY \
+		-e XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR \
+		--net=host --cap-add=SYS_ADMIN "$@" -d $IMAGE > /dev/null 2>&1
+	existing=$(docker ps -f status=running -f label=ids=$IDS --format='{{.Names}}' | grep -v STALE)
+	tries=5
+	while [[ -z $existing && $tries > 0 ]]; do
+		sleep 1
+		((tries -= 1))
+	done
+	docker exec "$@" -it $existing sh -c "$SHELL_CMD"
+fi
